@@ -1,19 +1,50 @@
-aname: make stuff
+name: Ansible CI Pipeline
+
 on:
   push:
     branches:
       - main
+  pull_request:
+
 jobs:
-  build:
-    name: build stuff
+  ansible-ci:
+    name: Run Ansible CI Checks
     runs-on: ubuntu-latest
+
     steps:
-      - name: check
+      # 1) Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
-      - name: install ansible
+
+      # 2) Install Ansible + Linting tools
+      - name: Install Ansible & tools
         run: |
-          sudo apt update && sudo apt install ansible
-          sudo apt install ansible-lint
-      - name: run
+          sudo apt update
+          sudo apt install -y ansible ansible-lint python3-pip
+          pip install yamllint
+
+      # 3) Validate YAML files
+      - name: YAML validation
+        run: |
+          yamllint .
+
+      # 4) Install Ansible collections (if requirements.yml exists)
+      - name: Install Ansible collections
+        if: exists('requirements.yml')
+        run: |
+          ansible-galaxy collection install -r requirements.yml
+
+      # 5) Syntax check for all playbooks
+      - name: Ansible syntax check
+        run: |
+          ansible-playbook --syntax-check playbooks/stp/stp.yml
+
+      # 6) Linting
+      - name: Run ansible-lint
         run: |
           ansible-lint playbooks/stp/stp.yml
+
+      # 7) Dry-run (check mode)
+      - name: Dry-run (check mode)
+        run: |
+          ansible-playbook playbooks/stp/stp.yml --check -i inventories/stp/hosts.yml
