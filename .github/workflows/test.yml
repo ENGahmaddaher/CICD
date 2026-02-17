@@ -28,9 +28,9 @@ jobs:
         run: |
           yamllint .
 
-      # 4) Install Ansible collections (if requirements.yml exists)
+      # 4) Install Ansible collections (only if requirements.yml exists)
       - name: Install Ansible collections
-        if: exists('requirements.yml')
+        if: hashFiles('requirements.yml') != ''
         run: |
           ansible-galaxy collection install -r requirements.yml
 
@@ -47,4 +47,4 @@ jobs:
       # 7) Dry-run (check mode)
       - name: Dry-run (check mode)
         run: |
-          ansible-playbook playbooks/stp/stp.yml --check -i inventories/stp/hosts.yml
+          ansible-playbook playbooks/stp/stp.yml --check -i inventories/hosts.ini
