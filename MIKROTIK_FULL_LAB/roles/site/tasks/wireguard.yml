@@ -1,0 +1,134 @@
+---
+# -------------------------
+# 1️⃣ WAN Interface IP
+# -------------------------
+- name: Ensure WAN IP exists
+  community.routeros.api_modify:
+    path: ip address
+    data:
+      - address: "{{ wan_ip }}"
+        interface: "{{ wan_interface }}"
+
+# -------------------------
+# 2️⃣ WireGuard Interface
+# -------------------------
+- name: Ensure WireGuard interface exists
+  community.routeros.api_modify:
+    path: interface wireguard
+    data:
+      - name: "{{ wg_name }}"
+        listen-port: "{{ wg_listen_port if wg_role == 'hub' else omit }}"
+
+- name: Assign IP to WireGuard interface
+  community.routeros.api_modify:
+    path: ip address
+    data:
+      - address: "{{ wg_ip }}"
+        interface: "{{ wg_name }}"
+
+- name: Read WireGuard interface info
+  community.routeros.api:
+    path: interface wireguard
+  register: wg_info
+
+- name: Set WireGuard public key fact
+  set_fact:
+    wg_public_key: "{{ wg_info.msg[0]['public-key'] }}"
+
+- name: Show WireGuard public key
+  debug:
+    msg: "Host {{ inventory_hostname }} public key: {{ wg_public_key }}"
+
+# -------------------------
+# 3️⃣ LAN Interface IP
+# -------------------------
+- name: Ensure LAN IP exists
+  community.routeros.api_modify:
+    path: ip address
+    data:
+      - address: "{{ lan_ip }}"
+        interface: "{{ lan_interface }}"
+  when:
+    - lan_ip is defined
+    - lan_interface is defined
+# -------------------------
+# 4️⃣ Build peer list (Hub ↔ Spokes only)
+# -------------------------
+- name: Build peer list
+  set_fact:
+    wg_peers: >-
+      {{
+        groups['wg']
+        | difference([inventory_hostname])
+        | map('extract', hostvars)
+        | selectattr('wg_role','equalto', 'hub' if wg_role == 'spoke' else 'spoke')
+        | list
+      }}
+
+
+- name: show wg peer
+  debug:
+    msg: "{{ wg_peers }}"
+# -------------------------
+# 5️⃣ Configure WireGuard peers
+# -------------------------
+- name: Configure WireGuard peers
+  community.routeros.api_modify:
+    path: interface wireguard peers
+    data:
+      - interface: "{{ wg_name }}"
+        public-key: "{{ item.wg_public_key }}"
+        allowed-address: >-
+          {{
+            ([item.wg_ip | regex_replace('/.*','/32')]
+             + ([item.lan_subnet] if (item.lan_subnet is defined and item.lan_subnet|length > 0) else []))
+            | join(',')
+            }}
+
+        endpoint-address: "{{ item.wan_ip.split('/')[0] if wg_role == 'spoke' else omit }}"
+        endpoint-port: "{{ wg_listen_port if wg_role == 'spoke' else omit }}"
+        persistent-keepalive: "{{ 25 if wg_role == 'spoke' else omit }}"
+  loop: "{{ wg_peers }}"
+
+# -------------------------
+# 6️⃣ Routing for LANs
+# -------------------------
+- name: Add routes to remote LANs
+  community.routeros.api_modify:
+    path: ip route
+    data:
+      - dst-address: "{{ item.lan_subnet }}"
+        gateway: "{{ wg_name }}"
+  when: item.lan_subnet is defined
+  loop: "{{ wg_peers }}"
+
+# -------------------------
+# 7️⃣ NAT Exception
+# -------------------------
+- name: Disable NAT between sites
+  community.routeros.api_modify:
+    path: ip firewall nat
+    data:
+      - chain: srcnat
+        action: accept
+        src-address: "{{ lan_subnet }}"
+        dst-address: "{{ item.lan_subnet }}"
+        comment: "{{ wg_nat_comment }}"
+  when:
+    - lan_subnet is defined
+    - item.lan_subnet is defined
+  loop: "{{ wg_peers }}"
+
+# -------------------------
+# 8️⃣ Firewall Allow WireGuard
+# -------------------------
+- name: Allow WireGuard UDP input on HUB
+  community.routeros.api_modify:
+    path: ip firewall filter
+    data:
+      - chain: input
+        action: accept
+        protocol: udp
+        dst-port: "{{ wg_listen_port }}"
+        comment: "{{ wg_fw_comment }}"
+  when: wg_role == 'hub'
